@@ -24,9 +24,12 @@ public class ByteArrayHttpClient {
         try {
             final String decodedUrl = URLDecoder.decode(urlString, "UTF-8");
             final URL url = new URL(decodedUrl);
-            final Request request = new Request.Builder().url(url).build();
-            final Response response = client.newCall(request).execute();
-            in = response.body().byteStream();
+            final Request request = new Request.Builder().url(url)
+                    .build();
+            final Response response = client.newCall(request)
+                    .execute();
+            in = response.body()
+                    .byteStream();
             return IOUtils.toByteArray(in);
         } catch (final MalformedURLException e) {
             Log.d(TAG, "Malformed URL", e);
