@@ -22,32 +22,36 @@ package com.felipecsl.gifimageview.library;
 import android.annotation.TargetApi;
 import android.graphics.Bitmap;
 import android.os.Build;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.util.Log;
 
-import java.io.FileInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /**
  * Reads frame data from a GIF image source and decodes it into individual frames
  * for animation purposes. Image data can be read from either and InputStream source
  * or a byte[].
- * <p/>
+ *
  * This class is optimized for running animations with the frames, there
  * are no methods to get individual frame images, only to decode the next frame in the
  * animation sequence. Instead, it lowers its memory footprint by only housing the minimum
  * data necessary to decode the next frame in the animation sequence.
- * <p/>
+ *
  * The animation must be manually moved forward using {@link #advance()} before requesting the next
  * frame. This method must also be called before you request the first frame or an error will
  * occur.
- * <p/>
+ *
  * Implementation adapted from sample code published in Lyons. (2004). <em>Java for Programmers</em>,
  * republished under the MIT Open Source License
  */
-class GifDecoder {
-    private static final String TAG = GifDecoder.class.getSimpleName();
+class ByteArrayGifDecoder {
+    private static final String TAG = ByteArrayGifDecoder.class.getSimpleName();
 
     /**
      * File read status: No errors.
@@ -98,7 +102,7 @@ class GifDecoder {
     private int[] act;
 
     // Raw GIF data from input source.
-    private FileInputStreamWrapper rawData;
+    private ByteBuffer rawData;
 
     // Raw data read working array.
     private byte[] block;
@@ -111,7 +115,7 @@ class GifDecoder {
     private int workBufferSize = 0;
     private int workBufferPosition = 0;
 
-    private GifHeaderParser parser;
+    private ByteArrayGifHeaderParser parser;
 
     // LZW decoder working arrays.
     private short[] prefix;
@@ -122,7 +126,7 @@ class GifDecoder {
 
     private int framePointer;
     private GifHeader header;
-    private ByteArrayGifDecoder.BitmapProvider bitmapProvider;
+    private BitmapProvider bitmapProvider;
     private Bitmap previousImage;
     private boolean savePrevious;
     private int status;
@@ -131,22 +135,68 @@ class GifDecoder {
     private int downsampledWidth;
     private boolean isFirstFrameTransparent;
 
-    GifDecoder(ByteArrayGifDecoder.BitmapProvider provider, GifHeader gifHeader, FileInputStreamWrapper rawData) {
+    /**
+     * An interface that can be used to provide reused {@link android.graphics.Bitmap}s to avoid GCs
+     * from constantly allocating {@link android.graphics.Bitmap}s for every frame.
+     */
+    public interface BitmapProvider {
+        /**
+         * Returns an {@link Bitmap} with exactly the given dimensions and config.
+         *
+         * @param width  The width in pixels of the desired {@link android.graphics.Bitmap}.
+         * @param height The height in pixels of the desired {@link android.graphics.Bitmap}.
+         * @param config The {@link android.graphics.Bitmap.Config} of the desired {@link
+         *               android.graphics.Bitmap}.
+         */
+        @NonNull
+        Bitmap obtain(int width, int height, Bitmap.Config config);
+
+        /**
+         * Releases the given Bitmap back to the pool.
+         */
+        void release(Bitmap bitmap);
+
+        /**
+         * Returns a byte array used for decoding and generating the frame bitmap.
+         *
+         * @param size the size of the byte array to obtain
+         */
+        byte[] obtainByteArray(int size);
+
+        /**
+         * Releases the given byte array back to the pool.
+         */
+        void release(byte[] bytes);
+
+        /**
+         * Returns an int array used for decoding/generating the frame bitmaps.
+         * @param size
+         */
+        int[] obtainIntArray(int size);
+
+        /**
+         * Release the given array back to the pool.
+         * @param array
+         */
+        void release(int[] array);
+    }
+
+    ByteArrayGifDecoder(BitmapProvider provider, GifHeader gifHeader, ByteBuffer rawData) {
         this(provider, gifHeader, rawData, 1 /*sampleSize*/);
     }
 
-    GifDecoder(ByteArrayGifDecoder.BitmapProvider provider, GifHeader gifHeader, FileInputStreamWrapper rawData,
-               int sampleSize) {
+    ByteArrayGifDecoder(BitmapProvider provider, GifHeader gifHeader, ByteBuffer rawData,
+                        int sampleSize) {
         this(provider);
         setData(gifHeader, rawData, sampleSize);
     }
 
-    GifDecoder(ByteArrayGifDecoder.BitmapProvider provider) {
+    ByteArrayGifDecoder(BitmapProvider provider) {
         this.bitmapProvider = provider;
         header = new GifHeader();
     }
 
-    GifDecoder() {
+    ByteArrayGifDecoder() {
         this(new SimpleBitmapProvider());
     }
 
@@ -158,13 +208,13 @@ class GifDecoder {
         return header.height;
     }
 
-    FileInputStreamWrapper getData() {
+    ByteBuffer getData() {
         return rawData;
     }
 
     /**
      * Returns the current status of the decoder.
-     * <p/>
+     *
      * <p> Status will update per frame to allow the caller to tell whether or not the current frame
      * was decoded successfully and/or completely. Format and open failures persist across frames.
      * </p>
@@ -245,7 +295,6 @@ class GifDecoder {
      * #setData(GifHeader, byte[])}, as well as internal buffers.
      */
     int getByteSize() {
-        //FIXME well this method was not used, fix it later. rawData.limit() returns 0.
         return rawData.limit() + mainPixels.length + (mainScratch.length * BYTES_PER_INTEGER);
     }
 
@@ -318,44 +367,44 @@ class GifDecoder {
         return result;
     }
 
-    //    /**
-    //     * Reads GIF image from stream.
-    //     *
-    //     * @param is containing GIF file.
-    //     * @return read status code (0 = no errors).
-    //     */
-    //    int read(InputStream is, int contentLength) {
-    //        if (is != null) {
-    //            try {
-    //                int capacity = (contentLength > 0) ?
-    //                        (contentLength + 4096) :
-    //                        16384;
-    //                ByteArrayOutputStream buffer = new ByteArrayOutputStream(capacity);
-    //                int nRead;
-    //                byte[] data = new byte[16384];
-    //                while ((nRead = is.read(data, 0, data.length)) != -1) {
-    //                    buffer.write(data, 0, nRead);
-    //                }
-    //                buffer.flush();
-    //
-    //                read(buffer.toByteArray());
-    //            } catch (IOException e) {
-    //                Log.w(TAG, "Error reading data from stream", e);
-    //            }
-    //        } else {
-    //            status = STATUS_OPEN_ERROR;
-    //        }
-    //
-    //        try {
-    //            if (is != null) {
-    //                is.close();
-    //            }
-    //        } catch (IOException e) {
-    //            Log.w(TAG, "Error closing stream", e);
-    //        }
-    //
-    //        return status;
-    //    }
+    /**
+     * Reads GIF image from stream.
+     *
+     * @param is containing GIF file.
+     * @return read status code (0 = no errors).
+     */
+    int read(InputStream is, int contentLength) {
+        if (is != null) {
+            try {
+                int capacity = (contentLength > 0) ?
+                        (contentLength + 4096) :
+                        16384;
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream(capacity);
+                int nRead;
+                byte[] data = new byte[16384];
+                while ((nRead = is.read(data, 0, data.length)) != -1) {
+                    buffer.write(data, 0, nRead);
+                }
+                buffer.flush();
+
+                read(buffer.toByteArray());
+            } catch (IOException e) {
+                Log.w(TAG, "Error reading data from stream", e);
+            }
+        } else {
+            status = STATUS_OPEN_ERROR;
+        }
+
+        try {
+            if (is != null) {
+                is.close();
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "Error closing stream", e);
+        }
+
+        return status;
+    }
 
     void clear() {
         header = null;
@@ -379,15 +428,15 @@ class GifDecoder {
         }
     }
 
-    //    synchronized void setData(GifHeader header, byte[] data) {
-    //        setData(header, ByteBuffer.wrap(data));
-    //    }
+    synchronized void setData(GifHeader header, byte[] data) {
+        setData(header, ByteBuffer.wrap(data));
+    }
 
-    synchronized void setData(GifHeader header, FileInputStreamWrapper buffer) {
+    synchronized void setData(GifHeader header, ByteBuffer buffer) {
         setData(header, buffer, 1);
     }
 
-    synchronized void setData(GifHeader header, FileInputStreamWrapper buffer, int sampleSize) {
+    synchronized void setData(GifHeader header, ByteBuffer buffer, int sampleSize) {
         if (sampleSize <= 0) {
             throw new IllegalArgumentException("Sample size must be >=0, not: " + sampleSize);
         }
@@ -398,16 +447,9 @@ class GifDecoder {
         isFirstFrameTransparent = false;
         framePointer = INITIAL_FRAME_POINTER;
         // Initialize the raw data buffer.
-        //        rawData = buffer.asReadOnlyBuffer();
-        rawData = buffer;
-        try {
-            rawData.position(0);
-        } catch (IOException e) {
-            status = STATUS_OPEN_ERROR;
-            return;
-        }
-        //FIXME order?
-        //        rawData.order(ByteOrder.LITTLE_ENDIAN);
+        rawData = buffer.asReadOnlyBuffer();
+        rawData.position(0);
+        rawData.order(ByteOrder.LITTLE_ENDIAN);
 
         // No point in specially saving an old frame if we're never going to use it.
         savePrevious = false;
@@ -429,9 +471,9 @@ class GifDecoder {
         downsampledHeight = header.height / sampleSize;
     }
 
-    private GifHeaderParser getHeaderParser() {
+    private ByteArrayGifHeaderParser getHeaderParser() {
         if (parser == null) {
-            parser = new GifHeaderParser();
+            parser = new ByteArrayGifHeaderParser();
         }
         return parser;
     }
@@ -442,12 +484,11 @@ class GifDecoder {
      * @param data containing GIF file.
      * @return read status code (0 = no errors).
      */
-    synchronized int read(FileInputStream data) {
-        final FileInputStreamWrapper inputWrapper = new FileInputStreamWrapper(data);
-        this.header = getHeaderParser().setData(inputWrapper)
+    synchronized int read(byte[] data) {
+        this.header = getHeaderParser().setData(data)
                 .parseHeader();
-        if (inputWrapper != null) {
-            setData(header, inputWrapper);
+        if (data != null) {
+            setData(header, data);
         }
 
         return status;
@@ -614,12 +655,7 @@ class GifDecoder {
         workBufferPosition = 0;
         if (frame != null) {
             // Jump to the frame start position.
-            try {
-                rawData.position(frame.bufferFrameStart);
-            } catch (IOException e) {
-                //FIXME handle this exception.
-                return;
-            }
+            rawData.position(frame.bufferFrameStart);
         }
 
         int npix = (frame == null) ?
@@ -756,12 +792,10 @@ class GifDecoder {
             workBuffer = bitmapProvider.obtainByteArray(WORK_BUFFER_SIZE);
         }
         workBufferPosition = 0;
-        workBufferSize = Math.min(rawData.remaining(), WORK_BUFFER_SIZE);
-        try {
-            rawData.get(workBuffer, 0, workBufferSize);
-        } catch (IOException e) {
-            //FIXME handle this exception.
-        }
+        final int remaining = rawData.remaining();
+        workBufferSize = Math.min(remaining, WORK_BUFFER_SIZE);
+        Log.d("TEST","byte get raw data into buffer，" + workBufferSize + " remaining: " + remaining);
+        rawData.get(workBuffer, 0, workBufferSize);
     }
 
     /**

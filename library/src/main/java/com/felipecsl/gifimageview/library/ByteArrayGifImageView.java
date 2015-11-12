@@ -8,10 +8,10 @@ import android.util.AttributeSet;
 import android.util.Log;
 import android.widget.ImageView;
 
-public class GifImageView extends ImageView implements Runnable {
+public class ByteArrayGifImageView extends ImageView implements Runnable {
 
     private static final String TAG = "GifDecoderView";
-    private GifDecoder gifDecoder;
+    private ByteArrayGifDecoder gifDecoder;
     private Bitmap tmpBitmap;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean animating;
@@ -39,16 +39,16 @@ public class GifImageView extends ImageView implements Runnable {
         }
     };
 
-    public GifImageView(final Context context, final AttributeSet attrs) {
+    public ByteArrayGifImageView(final Context context, final AttributeSet attrs) {
         super(context, attrs);
     }
 
-    public GifImageView(final Context context) {
+    public ByteArrayGifImageView(final Context context) {
         super(context);
     }
 
     public void setBytes(final byte[] bytes) {
-        gifDecoder = new GifDecoder();
+        gifDecoder = new ByteArrayGifDecoder();
         try {
             gifDecoder.read(bytes);
             gifDecoder.advance();

@@ -20,16 +20,17 @@ package com.felipecsl.gifimageview.library;
 
 import android.util.Log;
 
-import java.io.IOException;
 import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /**
  * A class responsible for creating {@link GifHeader}s from data
  * representing animated gifs.
  */
-public class GifHeaderParser {
-    public static final String TAG = "GifHeaderParser";
+public class ByteArrayGifHeaderParser {
+    public static final String TAG = "ByteArrayGifHeaderParser";
 
     // The minimum frame delay in hundredths of a second.
     static final int MIN_FRAME_DELAY = 2;
@@ -41,40 +42,26 @@ public class GifHeaderParser {
     // Raw data read working array.
     private final byte[] block = new byte[MAX_BLOCK_SIZE];
 
-    private FileInputStreamWrapper rawData;
+    private ByteBuffer rawData;
     private GifHeader header;
     private int blockSize = 0;
 
-    //    public GifHeaderParser setData(ByteBuffer data) {
-    //        reset();
-    //        rawData = data.asReadOnlyBuffer();
-    //        rawData.position(0);
-    //        rawData.order(ByteOrder.LITTLE_ENDIAN);
-    //        return this;
-    //    }
-
-    public GifHeaderParser setData(FileInputStreamWrapper data) {
-        if (data != null) {
-            //            setData(ByteBuffer.wrap(data));
-            reset();
-            rawData = data;
-//            rawData.position(0);
-            try {
-                rawData.reset();
-            } catch (IOException e) {
-                onOpenErr();
-            }
-            //            rawData.order(ByteOrder.LITTLE_ENDIAN);
-            return this;
-        } else {
-            onOpenErr();
-        }
+    public ByteArrayGifHeaderParser setData(ByteBuffer data) {
+        reset();
+        rawData = data.asReadOnlyBuffer();
+        rawData.position(0);
+        rawData.order(ByteOrder.LITTLE_ENDIAN);
         return this;
     }
 
-    private void onOpenErr() {
-        rawData = null;
-        header.status = GifDecoder.STATUS_OPEN_ERROR;
+    public ByteArrayGifHeaderParser setData(byte[] data) {
+        if (data != null) {
+            setData(ByteBuffer.wrap(data));
+        } else {
+            rawData = null;
+            header.status = ByteArrayGifDecoder.STATUS_OPEN_ERROR;
+        }
+        return this;
     }
 
     public void clear() {
@@ -101,7 +88,7 @@ public class GifHeaderParser {
         if (!err()) {
             readContents();
             if (header.frameCount < 0) {
-                header.status = GifDecoder.STATUS_FORMAT_ERROR;
+                header.status = ByteArrayGifDecoder.STATUS_FORMAT_ERROR;
             }
         }
 
@@ -133,71 +120,67 @@ public class GifHeaderParser {
     private void readContents(int maxFrames) {
         // Read GIF file content blocks.
         boolean done = false;
-        try {
-            while (!(done || err() || header.frameCount > maxFrames)) {
-                int code = read();
-                switch (code) {
-                    // Image separator.
-                    case 0x2C:
-                        // The graphics control extension is optional, but will always come first if it exists.
-                        // If one did
-                        // exist, there will be a non-null current frame which we should use. However if one
-                        // did not exist,
-                        // the current frame will be null and we must create it here. See issue #134.
-                        if (header.currentFrame == null) {
+        while (!(done || err() || header.frameCount > maxFrames)) {
+            int code = read();
+            switch (code) {
+                // Image separator.
+                case 0x2C:
+                    // The graphics control extension is optional, but will always come first if it exists.
+                    // If one did
+                    // exist, there will be a non-null current frame which we should use. However if one
+                    // did not exist,
+                    // the current frame will be null and we must create it here. See issue #134.
+                    if (header.currentFrame == null) {
+                        header.currentFrame = new GifFrame();
+                    }
+                    readBitmap();
+                    break;
+                // Extension.
+                case 0x21:
+                    code = read();
+                    switch (code) {
+                        // Graphics control extension.
+                        case 0xf9:
+                            // Start a new frame.
                             header.currentFrame = new GifFrame();
-                        }
-                        readBitmap();
-                        break;
-                    // Extension.
-                    case 0x21:
-                        code = read();
-                        switch (code) {
-                            // Graphics control extension.
-                            case 0xf9:
-                                // Start a new frame.
-                                header.currentFrame = new GifFrame();
-                                readGraphicControlExt();
-                                break;
-                            // Application extension.
-                            case 0xff:
-                                readBlock();
-                                String app = "";
-                                for (int i = 0; i < 11; i++) {
-                                    app += (char) block[i];
-                                }
-                                if (app.equals("NETSCAPE2.0")) {
-                                    readNetscapeExt();
-                                } else {
-                                    // Don't care.
-                                    skip();
-                                }
-                                break;
-                            // Comment extension.
-                            case 0xfe:
+                            readGraphicControlExt();
+                            break;
+                        // Application extension.
+                        case 0xff:
+                            readBlock();
+                            String app = "";
+                            for (int i = 0; i < 11; i++) {
+                                app += (char) block[i];
+                            }
+                            if (app.equals("NETSCAPE2.0")) {
+                                readNetscapeExt();
+                            } else {
+                                // Don't care.
                                 skip();
-                                break;
-                            // Plain text extension.
-                            case 0x01:
-                                skip();
-                                break;
-                            // Uninteresting extension.
-                            default:
-                                skip();
-                        }
-                        break;
-                    // Terminator.
-                    case 0x3b:
-                        done = true;
-                        break;
-                    // Bad byte, but keep going and see what happens break;
-                    case 0x00:
-                    default:
-                        header.status = GifDecoder.STATUS_FORMAT_ERROR;
-                }
+                            }
+                            break;
+                        // Comment extension.
+                        case 0xfe:
+                            skip();
+                            break;
+                        // Plain text extension.
+                        case 0x01:
+                            skip();
+                            break;
+                        // Uninteresting extension.
+                        default:
+                            skip();
+                    }
+                    break;
+                // Terminator.
+                case 0x3b:
+                    done = true;
+                    break;
+                // Bad byte, but keep going and see what happens break;
+                case 0x00:
+                default:
+                    header.status = ByteArrayGifDecoder.STATUS_FORMAT_ERROR;
             }
-        } catch (IOException e) {
-            header.status = GifDecoder.STATUS_OPEN_ERROR;
         }
     }
 
@@ -256,14 +239,10 @@ public class GifHeaderParser {
         }
 
         // Save this as the decoding position pointer.
-        try {
-            header.currentFrame.bufferFrameStart = (int) rawData.position();
-            // False decode pixel data to advance buffer.
-            skipImageData();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        header.currentFrame.bufferFrameStart = rawData.position();
 
+        // False decode pixel data to advance buffer.
+        skipImageData();
 
         if (err()) {
             return;
@@ -299,7 +278,7 @@ public class GifHeaderParser {
             id += (char) read();
         }
         if (!id.startsWith("GIF")) {
-            header.status = GifDecoder.STATUS_FORMAT_ERROR;
+            header.status = ByteArrayGifDecoder.STATUS_FORMAT_ERROR;
             return;
         }
         readLSD();
@@ -359,12 +338,7 @@ public class GifHeaderParser {
             if (Log.isLoggable(TAG, Log.DEBUG)) {
                 Log.d(TAG, "Format Error Reading Color Table", e);
             }
-            header.status = GifDecoder.STATUS_FORMAT_ERROR;
-        } catch (IOException e) {
-            if (Log.isLoggable(TAG, Log.DEBUG)) {
-                Log.d(TAG, "IO Exception Reading Color Table", e);
-            }
-            header.status = GifDecoder.STATUS_OPEN_ERROR;
+            header.status = ByteArrayGifDecoder.STATUS_FORMAT_ERROR;
         }
 
         return tab;
@@ -373,7 +347,7 @@ public class GifHeaderParser {
     /**
      * Skips LZW image data for a single frame to advance buffer.
      */
-    private void skipImageData() throws IOException {
+    private void skipImageData() {
         // lzwMinCodeSize
         read();
         // data sub-blocks
@@ -383,7 +357,7 @@ public class GifHeaderParser {
     /**
      * Skips variable length blocks up to and including next zero length block.
      */
-    private void skip() throws IOException {
+    private void skip() {
         int blockSize;
         do {
             blockSize = read();
@@ -414,7 +388,7 @@ public class GifHeaderParser {
                             "Error Reading Block n: " + n + " count: " + count + " blockSize: " + blockSize,
                             e);
                 }
-                header.status = GifDecoder.STATUS_FORMAT_ERROR;
+                header.status = ByteArrayGifDecoder.STATUS_FORMAT_ERROR;
             }
         }
         return n;
@@ -428,7 +402,7 @@ public class GifHeaderParser {
         try {
             curByte = rawData.get() & 0xFF;
         } catch (Exception e) {
-            header.status = GifDecoder.STATUS_FORMAT_ERROR;
+            header.status = ByteArrayGifDecoder.STATUS_FORMAT_ERROR;
         }
         return curByte;
     }
@@ -438,15 +412,10 @@ public class GifHeaderParser {
      */
     private int readShort() {
         // Read 16-bit value.
-        try {
-            return rawData.getShort();
-        } catch (IOException e) {
-            //FIXME handle this exception.
-            return 0;
-        }
+        return rawData.getShort();
     }
 
     private boolean err() {
-        return header.status != GifDecoder.STATUS_OK;
+        return header.status != ByteArrayGifDecoder.STATUS_OK;
     }
 }

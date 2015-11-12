@@ -24,12 +24,12 @@ import java.util.List;
 /**
  * A header object containing the number of frames in an animated GIF image as well as basic
  * metadata like width and height that can be used to decode each individual frame of the GIF. Can
- * be shared by one or more {@link GifDecoder}s to play the same animated GIF in multiple views.
+ * be shared by one or more {@link ByteArrayGifDecoder}s to play the same animated GIF in multiple views.
  */
 public class GifHeader {
 
     int[] gct = null;
-    int status = GifDecoder.STATUS_OK;
+    int status = ByteArrayGifDecoder.STATUS_OK;
     int frameCount = 0;
 
     GifFrame currentFrame;
